@@ -1,18 +1,22 @@
 # AGENTS.md - Spring Boot Project Guidelines
 
 ## Project Overview
-Spring Boot 4.0.3 application for managing prices (gestiondeprecios). Java 17.
+Spring Boot 3.3.5 application for managing prices (gestiondeprecios). Java 17.
 
 ## Build & Test Commands
+
+> Prerequisito: Java 17. En Windows, asegurá `JAVA_HOME` apuntando al JDK (el wrapper `mvnw.cmd` falla si no está configurado).
 
 ### Run Application
 ```bash
 ./mvnw spring-boot:run
+.\mvnw.cmd spring-boot:run   # Windows (PowerShell)
 ```
 
 ### Build
 ```bash
 ./mvnw clean package
+.\mvnw.cmd clean package     # Windows (PowerShell)
 ```
 
 ### Run Tests
@@ -20,11 +24,13 @@ Spring Boot 4.0.3 application for managing prices (gestiondeprecios). Java 17.
 ./mvnw test                    # All tests
 ./mvnw test -Dtest=ClassName   # Single test class
 ./mvnw test -Dtest=ClassName#methodName  # Single test method
+.\mvnw.cmd test                 # Windows (PowerShell)
 ```
 
 ### Docker
 ```bash
 docker-compose up -d    # Start MySQL + Adminer
+docker compose up -d    # Docker Compose v2
 ```
 
 ## Architecture
@@ -32,52 +38,49 @@ docker-compose up -d    # Start MySQL + Adminer
 ### Package Structure
 ```
 com.sastreria.gestiondeprecios/
-├── auth/           # Authentication (controller, service, impl, dto)
-├── config/         # Configuration classes
-├── enums/          # Enumerations (Rol, ErrorCode)
-├── exceptions/     # Custom exceptions + GlobalExceptionHandler
-├── jwt/            # JWT filter
-├── productCategory/  # Feature module (entity, controller, service, impl, repository, dto, mapper)
-├── products/      # Products feature
-├── users/         # Users feature
-└── util/           # Utilities
+├── config/         # ApiPaths, AuditConfig, GlobalExceptionHandler
+├── customer/       # Customers feature (entity, controller, service, repository, dto, mapper, exceptions)
+├── enums/          # Enumerations (Gender)
+├── gender/         # Read-only genders endpoint
+├── products/       # Products feature (entity, controller, service, repository, dto, mapper, exceptions)
+└── util/           # Utilities (ErrorResponse)
 ```
 
 ### Layered Architecture
 1. **Controller** - REST endpoints, validation, logging
 2. **Service (Interface)** - Business logic contract
-3. **ServiceImpl** - Business logic implementation with `@Transactional`
+3. **ServiceImpl** - Business logic implementation (use `@Transactional` when needed, e.g. `customer/CustomerServiceImpl`)
 4. **Repository** - Spring Data JPA data access
-5. **Mapper** - `@Component` converting between DTOs and Entities
+5. **Mapper** - MapStruct `@Mapper(componentModel = "spring")` converting between DTOs and Entities
 6. **DTOs** - Records for request/response
 
 ## Code Style Guidelines
 
 ### Naming Conventions
-- **Classes**: PascalCase (`ProductCategory`, `UserServiceImpl`)
-- **Interfaces**: PascalCase (`ProductCategoryService`)
+- **Classes**: PascalCase (`Product`, `CustomerServiceImpl`)
+- **Interfaces**: PascalCase (`ProductService`, `CustomerService`)
 - **Methods**: camelCase (`findByName`, `existsByName`)
-- **Variables**: camelCase (`productCategory`, `userRequest`)
+- **Variables**: camelCase (`product`, `customerRequest`)
 - **Packages**: lowercase with dots (`com.sastreria.gestiondeprecios`)
-- **Enums**: UPPER_SNAKE_CASE (`ADMIN`, `USER`)
-- **DTOs**: PascalCase with suffix `Request` or `Response` (`UserRequest`, `UserResponse`)
+- **Enums**: UPPER_SNAKE_CASE (`HOMBRE`, `MUJER`)
+- **DTOs**: PascalCase with suffix `Request` or `Response` (`CustomerRequest`, `ProductResponse`)
 - **Mappers**: PascalCase with suffix `Mapper` (`ProductMapper`)
 
 ### Java Records for DTOs
 ```java
 // Request DTOs with validation
-public record ProductCategoryRequest(
-        @NotBlank(message = "El nombre es obligatorio")
-        @Size(min = 3, max = 20, message = "...")
-        String name,
-        @Size(min = 3, max = 100, message = "...")
-        String description
+public record CustomerRequest(
+        @NotBlank(message = "El name es obligatorio")
+        @Size(min = 3, max = 50, message = "El nombre debe tener entre 3 y 50 caracteres.")
+        String name
 ) { }
 
 // Response DTOs with @Builder
 @Builder
-public record ProductCategoryResponse(
+public record CustomerResponse(
         Long id,
+        boolean active,
+        String name,
         @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdAt
 ) { }
 ```
@@ -85,49 +88,55 @@ public record ProductCategoryResponse(
 ### Entities
 ```java
 @Entity
-@Table(name = "product_types")
-@Data
+@Table(name = "products")
+@Getter
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
 @EntityListeners(AuditingEntityListener.class)
-public class ProductCategory {
+public class Product {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, length = 100, unique = true)
+    @Column(nullable = false, length = 100)
     private String name;
-    
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Gender gender;
+
     @CreatedDate
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal priceReference;
 }
 ```
 
 ### Controllers
 ```java
 @RestController
-@RequestMapping("/v1/product-categories")
+@RequestMapping(ApiPaths.Customers.CUSTOMERS_ROOT)
 @RequiredArgsConstructor
 @Slf4j
-public class ProductCategoryController {
-    private final ProductCategoryService service;
-    private final ProductMapper mapper;
+@Validated
+public class CustomerController {
+    private final CustomerService customerService;
+    private final CustomerMapper customerMapper;
 
     @PostMapping
-    public ResponseEntity<ProductCategoryResponse> create(
-            @Valid @RequestBody ProductCategoryRequest request) {
-        log.info("Request para crear producto tipo({})", request.name());
-        ProductCategory product = service.save(mapper.toEntity(request));
-        
-        URI location = ServletUriComponentsBuilder
-                .fromCurrentRequest()
-                .path("/{id}")
-                .buildAndExpand(product.getId())
+    public ResponseEntity<CustomerResponse> create(
+            @Valid @RequestBody CustomerRequest customerRequest,
+            UriComponentsBuilder uriComponentsBuilder) {
+        log.info("Request para crear usuario({})", customerRequest.name());
+        Customer saved = customerService.create(customerMapper.customerDtoToCustomer(customerRequest));
+        URI uri = uriComponentsBuilder
+                .path(ApiPaths.Customers.CUSTOMERS_BY_ID)
+                .buildAndExpand(saved.getId())
                 .toUri();
-
-        return ResponseEntity.created(location).body(mapper.toDto(product));
+        return ResponseEntity.created(uri).body(customerMapper.customerToCustomerDto(saved));
     }
 }
 ```
@@ -136,95 +145,82 @@ public class ProductCategoryController {
 ```java
 @Service
 @RequiredArgsConstructor
-public class ProductCategoryServiceImpl implements ProductCategoryService {
-    private final ProductCategoryRepository repository;
+@Slf4j
+public class ProductServiceImpl implements ProductService {
+    private final ProductRepository repository;
 
     @Override
-    @Transactional
-    public ProductCategory save(ProductCategory productCategory) {
-        // Normalize input
-        String normalizeName = TextNormalizer.normalize(productCategory.getName());
-        if (existsByName(normalizeName)) {
-            throw new ProductTypeAlreadyExist("Ya se encuentra una categoria con este nombre");
+    public Product save(Product product) {
+        String name = product.getName();
+        if (existsByName(name)) {
+            throw new ProductAlreadyExist("Ya se encuentra registrado un producto con este nombre");
         }
-        productCategory.setName(normalizeName);
-        
-        try {
-            return repository.save(productCategory);
-        } catch (DataIntegrityViolationException e) {
-            throw new ProductTypeAlreadyExist("...");
-        }
+        return repository.save(product);
     }
 }
 ```
 
 ### Mappers
 ```java
-@Component
-public class ProductMapper {
-    public ProductCategory toEntity(ProductCategoryRequest request) {
-        return ProductCategory.builder()
-                .name(request.name())
-                .description(request.description())
-                .active(true)
-                .build();
-    }
+@Mapper(componentModel = "spring")
+public interface ProductMapper {
+    ProductMapper INSTANCE = Mappers.getMapper(ProductMapper.class);
 
-    public ProductCategoryResponse toDto(ProductCategory productCategory) {
-        return ProductCategoryResponse.builder()
-                .id(productCategory.getId())
-                .createdAt(productCategory.getCreatedAt())
-                .build();
-    }
+    Product productDtoToProduct(ProductRequest productRequest);
+
+    ProductResponse productToProductDto(Product saved);
 }
 ```
 
 ### Custom Exceptions
 ```java
 // Custom exception
-public class UserNotFound extends RuntimeException {
-    public UserNotFound(String message) {
-        super(message);
-    }
+public class ProductAlreadyExist extends RuntimeException {
+    public ProductAlreadyExist(String message) { super(message); }
 }
 
 // Global exception handler
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
-    @ExceptionHandler(UserNotFound.class)
-    public ResponseEntity<ErrorResponse> handleUserNotFound(
-            UserNotFound exception, HttpServletRequest request) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(ErrorResponse.builder()
-                        .message(exception.getMessage())
-                        .status(HttpStatus.NOT_FOUND.value())
-                        .timestamp(LocalDateTime.now())
-                        .path(request.getRequestURI())
-                        .build());
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handle(
+            MethodArgumentNotValidException exception, HttpServletRequest request) {
+        Map<String, String> errors = exception.getBindingResult().getFieldErrors().stream()
+                .collect(HashMap::new, (map, error) -> map.put(error.getField(), error.getDefaultMessage()), HashMap::putAll);
+
+        ErrorResponse response = ErrorResponse.builder()
+                .message("Error de validacion")
+                .status(HttpStatus.BAD_REQUEST.value())
+                .timestamp(LocalDateTime.now())
+                .path(request.getRequestURI())
+                .errors(errors)
+                .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 }
 ```
 
 ### Imports Order (IDE will handle, but be aware)
 1. `java.*`
-2. `javax.*`
-3. Third-party (`jakarta.*`, `org.*`, `com.*`)
-4. Project imports
+2. `jakarta.*`
+3. Third-party (`org.*`)
+4. Project imports (`com.sastreria.*`)
 
 ### Lombok Usage
-- `@Data`, `@Builder`, `@AllArgsConstructor`, `@NoArgsConstructor` for entities
+- `@Getter`, `@Builder`, `@AllArgsConstructor`, `@NoArgsConstructor` for entities (with `@Setter` on mutable fields like `customer/Customer#active`)
 - `@RequiredArgsConstructor` for services, controllers, mappers
 - `@Slf4j` for logging in controllers and exception handlers
 
 ### Annotations Order on Classes
 1. `@Entity`, `@Table`, `@RestController`, etc.
 2. `@RequestMapping` or similar mappings
-3. Lombok annotations (`@Data`, `@RequiredArgsConstructor`, etc.)
+3. Lombok annotations (`@Getter`, `@RequiredArgsConstructor`, etc.)
 4. `@Slf4j`
 
 ### API Versioning
-- Use `/v1/` prefix for all endpoints: `/v1/product-categories`
+- Use `/v1/` prefix for all endpoints (see `config/ApiPaths.java`): `/v1/customers`, `/v1/products`, `/v1/genders`
 
 ### Validation
 - Use Jakarta Validation (`@Valid`) on controller method parameters
@@ -234,3 +230,4 @@ public class GlobalExceptionHandler {
 ### Testing
 - H2 in-memory database for tests (`application-test.yml`)
 - Use `@SpringBootTest` or `@WebMvcTest` as appropriate
+- `GestiondepreciosApplicationTests` uses `@ActiveProfiles("test")`

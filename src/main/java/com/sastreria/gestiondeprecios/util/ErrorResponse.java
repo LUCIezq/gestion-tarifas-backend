@@ -8,11 +8,10 @@ import java.util.Map;
 
 @Builder
 public record ErrorResponse(
-        String message,
-        int status,
-        LocalDateTime timestamp,
-        String path,
-        @JsonInclude(JsonInclude.Include.NON_NULL)
-        Map<String, String> errors
-) {
+                String message,
+                int status,
+                LocalDateTime timestamp,
+                String method,
+                String path,
+                @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, String> errors) {
 }
